@@ -1,3 +1,116 @@
 # dsh-session-folders
 - 为 DeepSeek Harness 的每个会话创建独立工作文件夹，按会话标题命名，文件自动收纳
 - One folder per conversation for DeepSeek Harness. Every new session gets its own workspace folder, named after the chat title.
+
+给 **DeepSeek Harness（DSH）** 的每个新会话一个独立的工作文件夹。会话里产生的文件会自动落进对应文件夹，不再散落在工作区根目录。文件夹名优先使用会话标题，例如「创建-hello.txt-文件」。
+> 只处理全新会话。安装前已有的会话、已经手动 `cd` 过的会话、子代理会话都保持原样。
+## 效果
+```text
+我的工作区/
+└─ 创建-hello.txt-文件/
+   ├─ .dsh-session.json     # 插件写入的会话信息
+   └─ hello.txt             # 会话里用相对路径创建的文件
+```
+- 每个会话一个文件夹，互不混杂。
+- 文件夹名来自会话标题；同名会话自动加 `-2`、`-3`。
+- 旧会话不迁移、不移动任何已有文件。
+- 子代理、Fork 默认沿用父会话的目录，不会各自再分一堆文件夹。
+## 工作方式
+DSH 的首个请求有一个固定时序：用户消息先进入 agent 收件箱，系统提示词组装完成后消息才写入会话日志，而会话标题又是根据日志里的首条消息生成的。因此首个请求发出时，官方标题还不可能存在。
+插件按下面的顺序处理：
+1. **首个请求组装前**：在会话的工作区根目录下创建 `2026-11-01_09-45-30` 这样的临时文件夹，并给会话追加 `working-directory/change`，把工作目录切进去。这一轮所有相对路径写入都会落在里面。
+2. **本轮结束、标题就绪后**：在 `turn/end` 的下一个微任务里把临时文件夹改名为会话标题，同时追加新的 `working-directory/change`。改名发生在两个回合之间，下一轮系统提示词会重新组装，不会出现“上下文里是旧目录、真实目录是新目录”的错位。
+3. **改名失败**（目录被占用、没有权限等）：保留时间戳文件夹，标题、会话 id、原始工作区都记录在文件夹内的 `.dsh-session.json` 里。
+标题之后如果被用户或模型再次修改，只更新 `.dsh-session.json`，不会再次改文件夹名，避免路径反复变化。
+## 安装
+要求：DSH `>= 0.2.1-rc.3`，Node.js `>= 22`。
+### 从本地目录安装（分享 / 开发）
+```bash
+git clone https://github.com/<your-name>/dsh-session-folders.git
+dsh plugin --profile web add link:/absolute/path/to/dsh-session-folders
+```
+（Desktop 用户把 `web` 换成 `desktop`；路径换成解压后的真实目录。）
+然后把这个包加入 profile 的 `dsh.profile.bundles`：
+```jsonc
+// $DSH_HOME/profiles/<profile>/package.json
+{
+  "dependencies": {
+    "dsh-session-folders": "link:/absolute/path/to/dsh-session-folders"
+  },
+  "dsh": {
+    "profile": {
+      "bundles": [
+        // ...已有的 bundle
+        "dsh-session-folders"
+      ]
+    }
+  }
+}
+```
+也可以安装后在 **设置 → 插件** 里打开 `会话文件夹`。启用 HMR 的 profile 会自动重新组合；否则重启 DSH。
+> 只添加依赖、不加入 `bundles` 时，插件不会挂载：`cordis.patch.yml` 只有在包被 bundle 层选中时才会被应用。
+### 从 npm 安装（发布后）
+```bash
+dsh plugin --profile <profile> add dsh-session-folders
+```
+同样需要在 profile 的 `dsh.profile.bundles` 中启用。
+## 配置
+在 `$DSH_HOME/profiles/<profile>/cordis.patch.yml` 中按 id 覆盖（整段 `config` 会被替换）：
+```yaml
+- id: session-folders
+  config:
+    enabled: true
+    pattern: '{title}'
+    fallbackPattern: '{date}_{time}'
+    maxNameChars: 48
+    includeSubagents: false
+    marker: '.dsh-session.json'
+    renameOnTitle: true
+```
+| 字段 | 默认值 | 含义 |
+|---|---|---|
+| `enabled` | `true` | 关闭后不再创建新文件夹；已创建的文件夹不受影响。 |
+| `pattern` | `{title}` | 最终文件夹名模板。支持 `{title}` `{slug}` `{date}` `{time}` `{datetime}` `{id}` `{shortId}`。 |
+| `fallbackPattern` | `{date}_{time}` | 首轮标题尚未生成时的临时文件夹名模板。 |
+| `maxNameChars` | `48` | 文件夹名最大字符数（按 Unicode 字符计）。 |
+| `includeSubagents` | `false` | 是否也给子代理会话建文件夹；默认关闭，子代理沿用父会话目录。 |
+| `marker` | `.dsh-session.json` | 每个会话文件夹内的标记文件名。 |
+| `renameOnTitle` | `true` | 标题就绪后是否把临时文件夹改名为标题。 |
+模板渲染后如果无法得到有效名称（例如标题为空且模板只有 `{title}`），会退回 `{date}_{time}`。
+## 标记文件
+每个会话文件夹里会有一个 `.dsh-session.json`：
+```json
+{
+  "plugin": "dsh-session-folders",
+  "markerVersion": 1,
+  "sessionId": "session-…",
+  "title": "创建 hello.txt 文件",
+  "originalCwd": "D:\\my-workspace",
+  "provisionalName": "2026-11-01_09-45-30",
+  "pattern": "{title}",
+  "createdAt": "2026-11-01T01:45:30.000Z",
+  "updatedAt": "2026-11-01T01:45:31.000Z",
+  "folder": "创建-hello.txt-文件",
+  "renamedAt": "2026-11-01T01:45:31.000Z"
+}
+```
+它同时也是“这个目录是本插件为哪个会话创建的”的凭据：名称冲突时会读取它来复用同会话目录。
+## 分享与发布
+- **直接分享**：把本目录（不含 `node_modules`）压缩成 zip，对方解压后用 `dsh plugin --profile <profile> add link:<解压目录>` 安装，再在 bundles 里启用。
+- **GitHub**：只把本目录作为仓库根目录提交，不要提交整个 `$DSH_HOME` 或插件父目录。
+- **npm**：确认 `dsh-session-folders` 名称可用后执行 `npm publish`；`publishConfig.access` 已设为 public。
+- 发布前建议改掉 `package.json` 里的 `author`，并补上 `repository`、`homepage`、`bugs` 字段。
+## 已知限制
+- **首轮目录名是时间戳**：官方标题在首轮请求之后才存在，所以第一轮里看到的是时间戳目录；回合结束后会自动改名。如果首轮就打开了这个目录，改名后路径会变化。
+- **改名可能失败**：Windows 上目录被进程占用（例如持久 shell 的 cwd、打开的文件）时 `rename` 会失败。插件会保留时间戳目录，并在标记文件里记录标题，不会丢文件。
+- **同一标题的多个会话**：第二个及之后的会话使用 `<标题>-2`、`<标题>-3`。
+- **不会迁移旧文件**：安装前已存在的会话和文件保持原样。
+- **会话工作目录会切到子文件夹**：DSH 的项目指令/技能发现以当前工作目录为起点向上查找项目根；如果工作区根目录本身没有 `.git`、`package.json` 之类的项目根标记，放在根目录的 `AGENTS.md` 可能不会被识别。需要保留根目录上下文时，可以把项目根标记放进工作区。
+- **Fork / 子代理**：默认沿用父会话目录，不单独建文件夹；需要时可以打开 `includeSubagents`。
+- **隐私**：文件夹名来自会话标题，可能包含你输入的内容；分享工作区截图或压缩包前请自行检查。
+## 开发
+- 零运行时依赖，宿主入口只用 Node 内置模块：`lib/index.js`。
+- 组合包挂载声明：`cordis.patch.yml`。
+- 语法检查：`node --check lib/index.js`。
+- 调试日志：启动前设置 `DSH_SESSION_FOLDERS_DEBUG=<日志文件绝对路径>`，会记录收件箱认领、目录创建、标题事件和改名过程。
+- 本地联调建议使用一个独立的 DSH profile，避免影响日常会话。
