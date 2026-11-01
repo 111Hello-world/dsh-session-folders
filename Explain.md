@@ -2,7 +2,7 @@
 
 English | [中文](README.md)
 
-<p align="center"><img src="assets/icon.png" width="112" alt="dsh-session-folders icon"></p>
+
 
 Give every new **DeepSeek Harness (DSH)** session its own workspace folder. Files created through relative paths in that session land in its folder instead of the workspace root. The folder is normally named after the session title, e.g. `创建-hello.txt-文件`.
 
